@@ -7,13 +7,15 @@ st.title("Karnataka School Management Finder")
 # Load dataset
 file_path = "karnataka_schools.xlsx"
 df = pd.read_excel(file_path)
+df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+
 
 st.write("Search schools by name or location in Karnataka")
 
 search_query = st.text_input("Enter School Name / Location:")
 
 if search_query:
-    column_to_search = "SCHOOL NAME"
+    column_to_search = "school_name"
 
     matches = process.extract(
         search_query,
