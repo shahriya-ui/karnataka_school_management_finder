@@ -5,7 +5,7 @@ from rapidfuzz import process, fuzz
 import html
 
 # ---------- CONFIG ----------
-DATAFILE = "karnataka_schools.xlsx"   # put file in repo root for Streamlit Cloud
+DATAFILE = "karnataka_schools.xlsx"   # put file in repo root for Streamlit Cloud / Colab
 SCORE_THRESHOLD = 75                  # high tolerance (less results, more accurate)
 MAX_RESULTS = 5
 # ----------------------------
@@ -28,15 +28,6 @@ st.markdown(
             border-left: 6px solid #0A3D62;
         }
         .label { color:#0A3D62; font-weight:600; }
-        .verify-btn {
-            background-color:#0A3D62;
-            color:white;
-            padding:8px 12px;
-            border-radius:6px;
-            text-decoration:none;
-            display:inline-block;
-            margin-top:6px;
-        }
         .small { font-size:13px; color:#444; }
     </style>
     """,
@@ -44,7 +35,7 @@ st.markdown(
 )
 
 st.markdown('<div class="header">Karnataka School Finder</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub">Select a district, type a school name (typos allowed). Shows up to 5 accurate matches.</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub">Select a district, type a school name (typos allowed). Click a school to view details.</div>', unsafe_allow_html=True)
 
 # ---------- Load data ----------
 @st.cache_data
@@ -57,12 +48,12 @@ def load_data(path=DATAFILE):
     df_local = df_local.loc[:, ~df_local.columns.str.contains('^Unnamed')]
     # normalize column names & whitespace
     df_local.columns = df_local.columns.str.strip()
+    # ensure expected columns exist
     for c in ['school_name','village','district','block','state_mgmt','school_category','school_type','school_status','udise_code']:
         if c in df_local.columns:
             df_local[c] = df_local[c].astype(str).str.strip()
         else:
-            # ensure column exists to avoid KeyErrors later
-            df_local[c] = df_local.get(c, "")
+            df_local[c] = ""
     # lowercase helper columns for matching
     df_local['school_name_lower'] = df_local['school_name'].str.lower()
     df_local['village_lower'] = df_local['village'].str.lower()
@@ -82,17 +73,36 @@ if df.empty:
             if c in df.columns:
                 df[c] = df[c].astype(str).str.strip()
             else:
-                df[c] = df.get(c, "")
+                df[c] = ""
         df['school_name_lower'] = df['school_name'].str.lower()
         df['village_lower'] = df['village'].str.lower()
 
+# ---------- Management mapping (clean labels) ----------
+def map_management(raw):
+    if not raw or str(raw).strip() == "":
+        return "Not available"
+    r = str(raw).strip().lower()
+    # common patterns -> normalized label
+    if "department of education" in r or "dept of education" in r or "education" in r and "private" not in r:
+        return "Government"
+    if "private" in r and "aided" in r:
+        return "Private Aided"
+    if "private" in r or "unaided" in r or "unaided" in r:
+        return "Private Unaided"
+    if "aided" in r and "private" not in r:
+        return "Government Aided"
+    if "central" in r or "kvs" in r or "navodaya" in r or "central government" in r:
+        return "Central Government"
+    if "local" in r or "panchayat" in r or "municipal" in r or "local body" in r:
+        return "Local Body"
+    # fallback: capitalize words
+    return str(raw).strip().title()
+
 # ---------- UI controls ----------
-# District dropdown (All + sorted list)
 districts = sorted(df['district'].dropna().unique().tolist())
 districts_display = ["All Districts"] + districts
 selected_district = st.selectbox("Select District:", districts_display, index=0)
 
-# School name input
 school_query = st.text_input("School name (type partial name; typos allowed):")
 
 st.write("---")
@@ -101,32 +111,23 @@ st.write("---")
 def fuzzy_search_in_df(name_query, df_subset, threshold=SCORE_THRESHOLD, max_results=MAX_RESULTS):
     if name_query is None or name_query.strip() == "":
         return pd.DataFrame()
-    # build choices
     choices = df_subset['school_name'].dropna().tolist()
-    # get matches with scores
     matches = process.extract(name_query, choices, scorer=fuzz.WRatio, limit=200)
-    # filter by threshold
     good = [m for m in matches if m[1] >= threshold]
-    # sort by score desc and keep up to max_results distinct names
     good_sorted = sorted(good, key=lambda x: x[1], reverse=True)[:max_results]
     if not good_sorted:
         return pd.DataFrame()
     matched_names = [m[0] for m in good_sorted]
-    # preserve score mapping so we can show confidence
     score_map = {m[0]: m[1] for m in good_sorted}
     result_rows = df_subset[df_subset['school_name'].isin(matched_names)].copy()
-    # attach match_score (use score_map by name)
     result_rows['match_score'] = result_rows['school_name'].map(score_map).fillna(0).astype(int)
-    # order by match_score desc
     result_rows = result_rows.sort_values(by='match_score', ascending=False)
-    # deduplicate by school_name keeping highest score row (if duplicates exist)
     result_rows = result_rows.drop_duplicates(subset=['school_name'], keep='first')
     return result_rows
 
 # ---------- Perform search ----------
 results = pd.DataFrame()
 if school_query and df.shape[0] > 0:
-    # filter by district if specified
     if selected_district != "All Districts":
         subset = df[df['district'].astype(str).str.strip().str.lower() == selected_district.strip().lower()]
     else:
@@ -134,53 +135,44 @@ if school_query and df.shape[0] > 0:
     if subset.empty:
         st.info("No schools found in selected district. Try 'All Districts' or different district.")
     else:
-        # First try quick exact/partial case-insensitive contains (fast)
         q = school_query.strip().lower()
         partials = subset[subset['school_name_lower'].str.contains(q, na=False)]
         if not partials.empty:
-            # compute fuzzy scores for these and pick top matches
             results = fuzzy_search_in_df(school_query, partials, threshold=SCORE_THRESHOLD, max_results=MAX_RESULTS)
         else:
-            # no direct partials → run fuzzy on entire subset
             results = fuzzy_search_in_df(school_query, subset, threshold=SCORE_THRESHOLD, max_results=MAX_RESULTS)
 
-# ---------- Display results ----------
+# ---------- Display results as clickable expanders ----------
 if results.empty:
     if school_query:
-        st.warning("No strong matches found (≥ 65%). Try adding more of the name or change district.")
+        st.warning(f"No strong matches found (≥ {SCORE_THRESHOLD}%). Try adding more of the name or change district.")
     else:
         st.info("Select a district and type a school name to start searching.")
 else:
     st.success(f"Showing {min(len(results), MAX_RESULTS)} best match(es) (confidence % shown).")
-    # build display rows with minimal official fields
-    display_cols = ['school_name','udise_code','district','block','village','match_score']
-    display_df = results[display_cols].copy()
-    display_df = display_df.rename(columns={
-        'school_name': 'School Name',
-        'udise_code': 'UDISE',
-        'district': 'District',
-        'block': 'Block',
-        'village': 'Village',
-        'match_score': 'Confidence (%)'
-    })
-    # Round/format confidence
-    display_df['Confidence (%)'] = display_df['Confidence (%)'].astype(int)
-    st.dataframe(display_df.reset_index(drop=True), use_container_width=True)
-
-    # Show details card for selected school (optional)
-    # Let user pick one to view full small card
-    labels = display_df['School Name'].tolist()
-    sel = st.selectbox("Select a school to view details:", ["-- pick --"] + labels)
-    if sel != "-- pick --":
-        chosen = results[results['school_name'] == sel].iloc[0]
-        # Build simple official card
-        def s(x): return html.escape(str(x)) if pd.notna(x) else "-"
-        st.markdown(f"""
-            <div class="card">
-                <div style="font-size:18px; font-weight:700; color:#0A3D62">{s(chosen['school_name'])}</div><br/>
-                <div><span class="label">UDISE:</span> {s(chosen['udise_code'])}</div>
-                <div><span class="label">District:</span> {s(chosen['district'])}</div>
-                <div><span class="label">Block:</span> {s(chosen['block'])}</div>
-                <div><span class="label">Village:</span> {s(chosen['village'])}</div>
-                
-        """, unsafe_allow_html=True)
+    # for readability: loop through rows and build expanders
+    for _, row in results.iterrows():
+        name = row['school_name']
+        score = int(row.get('match_score', 0))
+        village = row.get('village', "")
+        block = row.get('block', "")
+        district = row.get('district', "")
+        udise = row.get('udise_code', "")
+        management_raw = row.get('state_mgmt', "")
+        management = map_management(management_raw)
+        status = row.get('school_status', "")
+        header = f"{name}  —  {village if village else block if block else district}  ({score}%)"
+        with st.expander(header):
+            # show minimal official fields in two columns
+            col1, col2 = st.columns([2,1])
+            with col1:
+                st.markdown(f"**School Name:** {html.escape(str(name))}")
+                st.markdown(f"**District:** {html.escape(str(district))}")
+                st.markdown(f"**Block:** {html.escape(str(block))}")
+                st.markdown(f"**Village:** {html.escape(str(village))}")
+            with col2:
+                st.markdown(f"**Management:** {html.escape(str(management))}")
+                st.markdown(f"**Status:** {html.escape(str(status))}")
+                st.markdown(f"**UDISE:** {html.escape(str(udise))}")
+            # small note
+            st.markdown('<div class="small">If details look incorrect, try selecting a different district or refine the school name.</div>', unsafe_allow_html=True)
