@@ -147,7 +147,7 @@ if school_query and df.shape[0] > 0:
 # ---------- Display results ----------
 if results.empty:
     if school_query:
-        st.warning("No strong matches found (≥ 75%). Try adding more of the name or change district.")
+        st.warning("No strong matches found (≥ 65%). Try adding more of the name or change district.")
     else:
         st.info("Select a district and type a school name to start searching.")
 else:
@@ -182,6 +182,5 @@ else:
                 <div><span class="label">District:</span> {s(chosen['district'])}</div>
                 <div><span class="label">Block:</span> {s(chosen['block'])}</div>
                 <div><span class="label">Village:</span> {s(chosen['village'])}</div>
-                <a class="verify-btn" href="https://udiseplus.gov.in/school/SchoolDirectory?udisecode={html.escape(str(chosen['udise_code']))}" target="_blank">Verify on UDISE+</a>
-            </div>
+                
         """, unsafe_allow_html=True)
